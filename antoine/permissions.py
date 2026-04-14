@@ -106,3 +106,92 @@ def optional_login(view_func):
         request.user_role = get_user_role(request.user)
         return view_func(request, *args, **kwargs)
     return wrapper
+
+
+# IDOR Prevention Decorators
+
+def user_owns_object(id_param_name='user_id'):
+    """
+    Decorator to prevent IDOR attacks by verifying object ownership.
+    For user-related objects, verifies current user owns the resource.
+    
+    Args:
+        id_param_name: Name of the URL parameter containing the user_id (default: 'user_id')
+    
+    Usage:
+        @user_owns_object('user_id')
+        def edit_profile(request, user_id):
+            # Only current user can access their own profile
+            pass
+    """
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapper(request, *args, **kwargs):
+            # Get the user_id from URL parameters
+            user_id = kwargs.get(id_param_name)
+            
+            if user_id is None:
+                messages.error(request, 'Invalid request: missing user identifier.')
+                return redirect('antoine:dashboard')
+            
+            # Convert to int if needed
+            try:
+                user_id = int(user_id)
+            except (ValueError, TypeError):
+                messages.error(request, 'Invalid user identifier.')
+                return redirect('antoine:dashboard')
+            
+            # Verify user owns this object (user can only access their own resources)
+            if request.user.id != user_id:
+                messages.error(request, 'You do not have permission to access this resource.')
+                return redirect('antoine:dashboard')
+            
+            return view_func(request, *args, **kwargs)
+        return wrapper
+    return decorator
+
+
+def admin_can_access_object(id_param_name='user_id'):
+    """
+    Decorator for admin-only views that accept object identifiers.
+    Verifies admin is trying to access a valid object.
+    
+    Args:
+        id_param_name: Name of the URL parameter containing the user_id (default: 'user_id')
+    
+    Usage:
+        @admin_required
+        @admin_can_access_object('user_id')
+        def reset_user_password(request, user_id):
+            # Admin accessing another user's password reset
+            pass
+    """
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapper(request, *args, **kwargs):
+            # Get the user_id from URL parameters
+            user_id = kwargs.get(id_param_name)
+            
+            if user_id is None:
+                messages.error(request, 'Invalid request: missing user identifier.')
+                return redirect('antoine:dashboard')
+            
+            # Convert to int if needed
+            try:
+                user_id = int(user_id)
+            except (ValueError, TypeError):
+                messages.error(request, 'Invalid user identifier.')
+                return redirect('antoine:dashboard')
+            
+            # Verify the user exists (prevent existence enumeration for valid users)
+            from django.contrib.auth.models import User
+            try:
+                User.objects.get(pk=user_id)
+            except User.DoesNotExist:
+                # Use same message as above to avoid leaking user existence
+                messages.error(request, 'You do not have permission to access this resource.')
+                return redirect('antoine:dashboard')
+            
+            return view_func(request, *args, **kwargs)
+        return wrapper
+    return decorator
