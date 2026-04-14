@@ -126,7 +126,14 @@
                             <a class="nav-link" href="{% url 'antoine:profile' %}">Profile</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link" href="{% url 'antoine:logout' %}">Logout</a>
+                            <!-- Logout form with CSRF protection -->
+                            <!-- POST-only to prevent CSRF via <img> or <a> tags -->
+                            <form id="logout-form" method="post" action="{% url 'antoine:logout' %}" style="display: inline;">
+                                {% csrf_token %}
+                                <button type="submit" class="nav-link btn btn-link" style="border: none; padding: 0.5rem 1rem; text-decoration: none; color: #ecf0f1;">
+                                    Logout
+                                </button>
+                            </form>
                         </li>
                     {% else %}
                         <li class="nav-item">

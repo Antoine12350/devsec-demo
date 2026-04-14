@@ -193,11 +193,16 @@ def login_view(request):
 
 
 @login_required(login_url='antoine:login')
-@require_http_methods(["GET", "POST"])
+@require_http_methods(["POST"])  # POST-only to prevent CSRF via <img> or <a> tags
+@csrf_protect  # Validate CSRF token
 def logout_view(request):
     """
     User logout view.
     Clears session and redirects to home page.
+    
+    Security:
+    - POST-only: Prevents CSRF via <img src> or <a href> tags
+    - CSRF token required: Ensures logout is intentional user action
     """
     user = request.user
     logout(request)
@@ -230,6 +235,8 @@ def dashboard(request):
 
 @login_required(login_url='antoine:login')
 @require_http_methods(["GET", "POST"])
+@login_required(login_url='antoine:login')
+@csrf_protect  # Validate CSRF token for profile updates
 def profile_view(request):
     """
     User profile view and update.
@@ -237,6 +244,9 @@ def profile_view(request):
     
     IDOR Protection: Accesses request.user.antoine_profile (no user_id parameter),
     so users can only view/edit their own profile.
+    
+    CSRF Protection: @csrf_protect validates CSRF token on POST requests,
+    preventing unauthorized profile modifications via cross-site requests.
     """
     try:
         profile = request.user.antoine_profile
@@ -266,6 +276,7 @@ def profile_view(request):
 
 @login_required(login_url='antoine:login')
 @require_http_methods(["GET", "POST"])
+@csrf_protect  # Validate CSRF token for password changes
 def change_password(request):
     """
     Change password view.
@@ -273,6 +284,9 @@ def change_password(request):
     
     IDOR Protection: Uses request.user (no user_id parameter),
     so each user can only change their own password.
+    
+    CSRF Protection: @csrf_protect validates CSRF token on POST requests,
+    preventing unauthorized password changes via cross-site requests.
     """
     if request.method == 'POST':
         form = CustomPasswordChangeForm(request.user, request.POST)
@@ -386,6 +400,8 @@ def audit_logs(request):
 @login_required(login_url='antoine:login')
 @admin_required
 @admin_can_access_object('user_id')
+@require_http_methods(["GET", "POST"])  # Explicit HTTP method validation
+@csrf_protect  # Validate CSRF token to prevent unauthorized password resets
 def reset_user_password(request, user_id):
     """
     Admin-only view to reset another user's password.
@@ -393,6 +409,10 @@ def reset_user_password(request, user_id):
     
     IDOR Protection: @admin_can_access_object ensures the user_id exists
     and prevents enumeration attacks via different error messages.
+    
+    CSRF Protection: @csrf_protect validates CSRF token on POST requests.
+    Prevents attackers from tricking admins into resetting passwords
+    via cross-site request forgery.
     """
     target_user = get_object_or_404(User, pk=user_id)
     
