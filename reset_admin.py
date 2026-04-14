@@ -13,7 +13,7 @@ admin.is_staff = True
 admin.is_superuser = True
 admin.is_active = True
 admin.save()
-print('✅ Admin account configured:')
+print(' Admin account configured:')
 print(f'   Username: admin')
 print(f'   Password: Admin@12345')
 print(f'   is_staff: {admin.is_staff}')

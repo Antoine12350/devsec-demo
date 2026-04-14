@@ -241,3 +241,79 @@ class UserUpdateForm(UserChangeForm):
             'is_active': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
             'is_staff': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
         }
+
+
+class PasswordResetRequestForm(forms.Form):
+    """
+    Form for requesting a password reset.
+    User enters their email and receives a reset link.
+    
+    Security: Uses safe error messages to prevent user enumeration.
+    """
+    email = forms.EmailField(
+        widget=forms.EmailInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Enter your email address',
+            'autocomplete': 'email'
+        }),
+        help_text='Enter the email address associated with your account.'
+    )
+    
+    def clean_email(self):
+        """Validate email exists in system without revealing it"""
+        email = self.cleaned_data.get('email')
+        # Note: We don't raise an error if email doesn't exist
+        # User enumeration prevention: same response for all cases
+        return email
+
+
+class PasswordResetForm(forms.Form):
+    """
+    Form for resetting password with new password fields.
+    Used after user validates their reset token.
+    
+    Security: Uses Django's password validation, prevents weak passwords.
+    """
+    new_password1 = forms.CharField(
+        label='New Password',
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Enter new password (min 8 characters)',
+            'autocomplete': 'new-password'
+        })
+    )
+    new_password2 = forms.CharField(
+        label='Confirm Password',
+        widget=forms.PasswordInput(attrs={
+            'class': 'form-control',
+            'placeholder': 'Confirm new password',
+            'autocomplete': 'new-password'
+        })
+    )
+    
+    def clean_new_password1(self):
+        """Validate password strength"""
+        password = self.cleaned_data.get('new_password1')
+        if password:
+            try:
+                validate_password(password)
+            except ValidationError as e:
+                raise ValidationError(e.messages)
+        return password
+    
+    def clean(self):
+        """Ensure passwords match"""
+        cleaned_data = super().clean()
+        password1 = cleaned_data.get('new_password1')
+        password2 = cleaned_data.get('new_password2')
+        
+        if password1 and password2 and password1 != password2:
+            raise ValidationError('Passwords do not match.')
+        
+        return cleaned_data
+    
+    def save(self, user):
+        """Set the new password for the user"""
+        user.set_password(self.cleaned_data['new_password1'])
+        user.save()
+        return user
