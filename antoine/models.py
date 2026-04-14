@@ -63,3 +63,76 @@ class PasswordChangeHistory(models.Model):
     
     def __str__(self):
         return f"{self.user.username} - Password changed at {self.changed_at}"
+
+
+class LoginAttempt(models.Model):
+    """
+    Track failed login attempts to prevent brute-force attacks.
+    
+    Implements progressive cooldowns:
+    - 0-4 failures: No cooldown
+    - 5-9 failures: 30 second cooldown
+    - 10-14 failures: 1 minute cooldown
+    - 15-19 failures: 5 minute cooldown
+    - 20+ failures: 15 minute cooldown
+    
+    After account is locked, admins must manually unlock or user waits for cooldown.
+    """
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='login_attempt')
+    failed_attempts = models.IntegerField(default=0)
+    last_attempt = models.DateTimeField(auto_now=True)
+    locked_until = models.DateTimeField(null=True, blank=True, help_text='Account locked until this time')
+    is_locked = models.BooleanField(default=False, help_text='Manual lock by admin')
+    
+    class Meta:
+        verbose_name_plural = 'Login Attempts'
+        indexes = [
+            models.Index(fields=['user', '-last_attempt']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.failed_attempts} failed attempts"
+    
+    def increment_failed_attempts(self):
+        """Increment failed attempts and update lockout."""
+        self.failed_attempts += 1
+        self.last_attempt = timezone.now()
+        
+        # Lock after 5 failed attempts with progressive cooldowns
+        if self.failed_attempts >= 5:
+            # Progressive cooldown in seconds
+            if self.failed_attempts < 10:
+                cooldown = 30  # 30 seconds
+            elif self.failed_attempts < 15:
+                cooldown = 60  # 1 minute
+            elif self.failed_attempts < 20:
+                cooldown = 300  # 5 minutes
+            else:
+                cooldown = 900  # 15 minutes
+            
+            self.locked_until = timezone.now() + timezone.timedelta(seconds=cooldown)
+        
+        self.save()
+    
+    def reset_attempts(self):
+        """Reset failed attempts after successful login."""
+        self.failed_attempts = 0
+        self.locked_until = None
+        self.save()
+    
+    def is_temporarily_locked(self):
+        """Check if account is temporarily locked due to failed attempts."""
+        if self.locked_until and timezone.now() < self.locked_until:
+            return True
+        # Clear expired lockout
+        if self.locked_until and timezone.now() >= self.locked_until:
+            self.locked_until = None
+            self.save()
+        return False
+    
+    def get_cooldown_seconds(self):
+        """Get remaining cooldown in seconds."""
+        if not self.locked_until:
+            return 0
+        remaining = (self.locked_until - timezone.now()).total_seconds()
+        return max(0, int(remaining))

@@ -14,7 +14,7 @@ from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.conf import settings
 
-from .models import UserProfile, LoginHistory, PasswordChangeHistory
+from .models import UserProfile, LoginHistory, PasswordChangeHistory, LoginAttempt
 from .forms import (
     RegistrationForm, LoginForm, UserProfileForm,
     CustomPasswordChangeForm, PasswordResetRequestForm, PasswordResetForm
@@ -77,8 +77,17 @@ def register(request):
 @csrf_protect
 def login_view(request):
     """
-    User login view with session creation.
-    Logs login attempts to LoginHistory model.
+    User login view with brute-force attack protection.
+    
+    Security measures:
+    - Tracks failed login attempts per account
+    - Implements progressive cooldowns after 5 failures:
+      * 5-9 failures: 30 second lockout
+      * 10-14 failures: 1 minute lockout
+      * 15-19 failures: 5 minute lockout
+      * 20+ failures: 15 minute lockout
+    - Shows generic error message (user enumeration prevention)
+    - Logs all attempts to LoginHistory for audit trail
     """
     if request.user.is_authenticated:
         return redirect('antoine:dashboard')
@@ -93,9 +102,39 @@ def login_view(request):
             password = form.cleaned_data.get('password')
             remember_me = form.cleaned_data.get('remember_me')
             
+            # Look up user first (before authentication)
+            try:
+                user_obj = User.objects.get(username=username)
+                login_attempt, _ = LoginAttempt.objects.get_or_create(user=user_obj)
+                
+                # Check if account is locked
+                if login_attempt.is_locked:
+                    messages.error(
+                        request,
+                        'This account has been manually locked. Please contact support.'
+                    )
+                    return render(request, 'antoine/login.html', {'form': form})
+                
+                # Check if temporarily locked due to failed attempts
+                if login_attempt.is_temporarily_locked():
+                    cooldown = login_attempt.get_cooldown_seconds()
+                    messages.error(
+                        request,
+                        f'Too many failed login attempts. '
+                        f'Please try again in {cooldown} seconds.'
+                    )
+                    return render(request, 'antoine/login.html', {'form': form})
+                
+            except User.DoesNotExist:
+                # User doesn't exist - don't reveal this
+                user_obj = None
+                login_attempt = None
+            
+            # Attempt authentication
             user = authenticate(request, username=username, password=password)
             
             if user is not None:
+                # Successful login
                 login(request, user)
                 
                 # Set session timeout
@@ -111,6 +150,10 @@ def login_view(request):
                     user_agent=user_agent,
                     success=True
                 )
+                
+                # Reset failed attempts
+                if login_attempt:
+                    login_attempt.reset_attempts()
                 
                 # Update last login IP
                 try:
@@ -128,13 +171,11 @@ def login_view(request):
                     return redirect(next_url)
                 return redirect('antoine:dashboard')
             else:
-                # Log failed login
-                try:
-                    user_obj = User.objects.get(username=username)
-                except User.DoesNotExist:
-                    user_obj = None
-                
+                # Failed login - track the attempt
                 if user_obj:
+                    login_attempt.increment_failed_attempts()
+                    
+                    # Log failed login
                     LoginHistory.objects.create(
                         user=user_obj,
                         ip_address=ip_address,
@@ -143,6 +184,7 @@ def login_view(request):
                         failure_reason='Invalid password'
                     )
                 
+                # Generic error message (user enumeration prevention)
                 messages.error(request, 'Invalid username or password.')
     else:
         form = LoginForm()
