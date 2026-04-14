@@ -17,6 +17,11 @@ urlpatterns = [
     # History
     path('login-history/', views.login_history, name='login_history'),
     
+    # Admin/Instructor
+    path('manage-users/', views.manage_users, name='manage_users'),
+    path('audit-logs/', views.audit_logs, name='audit_logs'),
+    path('reset-password/<int:user_id>/', views.reset_user_password, name='reset_user_password'),
+    
     # Public
     path('user/<int:user_id>/', views.public_profile, name='public_profile'),
 ]
