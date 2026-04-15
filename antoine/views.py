@@ -14,7 +14,7 @@ from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.conf import settings
 
-from .models import UserProfile, LoginHistory, PasswordChangeHistory, LoginAttempt
+from .models import UserProfile, LoginHistory, PasswordChangeHistory, LoginAttempt, AuditLog
 from .forms import (
     RegistrationForm, LoginForm, UserProfileForm,
     CustomPasswordChangeForm, PasswordResetRequestForm, PasswordResetForm
@@ -38,6 +38,39 @@ def get_client_ip(request):
 def get_user_agent(request):
     """Extract user agent from request"""
     return request.META.get('HTTP_USER_AGENT', '')
+
+
+def log_audit_event(request, event_type, user=None, affected_user=None, 
+                    severity='MEDIUM', description='', details=None):
+    """
+    Log security-relevant events to AuditLog.
+    
+    Args:
+        request: Django request object (for IP and user agent)
+        event_type: Event type from AuditLog.EVENT_TYPES
+        user: User who triggered the event (defaults to request.user)
+        affected_user: User affected by the event (may differ for admin actions)
+        severity: Severity level (LOW, MEDIUM, HIGH, CRITICAL)
+        description: Human-readable description of the event
+        details: Dict with structured data (NO passwords or secrets)
+    """
+    if details is None:
+        details = {}
+    
+    # Default user is the current request user
+    if user is None and request.user.is_authenticated:
+        user = request.user
+    
+    AuditLog.objects.create(
+        user=user,
+        affected_user=affected_user,
+        event_type=event_type,
+        severity=severity,
+        ip_address=get_client_ip(request),
+        user_agent=get_user_agent(request),
+        description=description,
+        details=details
+    )
 
 
 def get_safe_redirect_url(next_url, request, fallback_url_name='antoine:dashboard'):
@@ -91,6 +124,18 @@ def register(request):
         if form.is_valid():
             try:
                 user = form.save()
+                
+                # Log registration
+                log_audit_event(
+                    request,
+                    'REGISTRATION',
+                    user=user,
+                    affected_user=user,
+                    severity='LOW',
+                    description=f'User {user.username} registered a new account',
+                    details={'username': user.username, 'email': user.email}
+                )
+                
                 messages.success(
                     request,
                     f'Account created successfully! Welcome, {user.username}. Please log in.'
@@ -145,6 +190,15 @@ def login_view(request):
                 
                 # Check if account is locked
                 if login_attempt.is_locked:
+                    log_audit_event(
+                        request,
+                        'LOGIN_FAILURE',
+                        user=user_obj,
+                        affected_user=user_obj,
+                        severity='HIGH',
+                        description=f'Login attempt on manually locked account {user_obj.username}',
+                        details={'reason': 'account_manually_locked'}
+                    )
                     messages.error(
                         request,
                         'This account has been manually locked. Please contact support.'
@@ -154,6 +208,15 @@ def login_view(request):
                 # Check if temporarily locked due to failed attempts
                 if login_attempt.is_temporarily_locked():
                     cooldown = login_attempt.get_cooldown_seconds()
+                    log_audit_event(
+                        request,
+                        'LOGIN_FAILURE',
+                        user=user_obj,
+                        affected_user=user_obj,
+                        severity='MEDIUM',
+                        description=f'Login attempt on temporarily locked account {user_obj.username} due to brute-force protection',
+                        details={'reason': 'temporary_lockout', 'failed_attempts': login_attempt.failed_attempts}
+                    )
                     messages.error(
                         request,
                         f'Too many failed login attempts. '
@@ -179,7 +242,18 @@ def login_view(request):
                 else:
                     request.session.set_expiry(0)  # Browser close
                 
-                # Log successful login
+                # Log successful login to AuditLog
+                log_audit_event(
+                    request,
+                    'LOGIN_SUCCESS',
+                    user=user,
+                    affected_user=user,
+                    severity='LOW',
+                    description=f'User {user.username} logged in successfully',
+                    details={'username': user.username, 'session_expiry': 'remember_me' if remember_me else 'browser_close'}
+                )
+                
+                # Log successful login to LoginHistory (existing tracking)
                 LoginHistory.objects.create(
                     user=user,
                     ip_address=ip_address,
@@ -210,7 +284,18 @@ def login_view(request):
                 if user_obj:
                     login_attempt.increment_failed_attempts()
                     
-                    # Log failed login
+                    # Log failed login to AuditLog
+                    log_audit_event(
+                        request,
+                        'LOGIN_FAILURE',
+                        user=user_obj,
+                        affected_user=user_obj,
+                        severity='MEDIUM',
+                        description=f'Failed login attempt for user {user_obj.username} (attempt #{login_attempt.failed_attempts})',
+                        details={'reason': 'invalid_password', 'attempt_number': login_attempt.failed_attempts}
+                    )
+                    
+                    # Log failed login to LoginHistory (existing tracking)
                     LoginHistory.objects.create(
                         user=user_obj,
                         ip_address=ip_address,
@@ -240,6 +325,18 @@ def logout_view(request):
     - CSRF token required: Ensures logout is intentional user action
     """
     user = request.user
+    
+    # Log logout
+    log_audit_event(
+        request,
+        'LOGOUT',
+        user=user,
+        affected_user=user,
+        severity='LOW',
+        description=f'User {user.username} logged out',
+        details={'username': user.username}
+    )
+    
     logout(request)
     messages.success(request, 'You have been logged out successfully.')
     return redirect('antoine:login')
@@ -333,6 +430,17 @@ def change_password(request):
             PasswordChangeHistory.objects.create(
                 user=user,
                 ip_address=ip_address
+            )
+            
+            # Log to AuditLog
+            log_audit_event(
+                request,
+                'PASSWORD_CHANGE',
+                user=user,
+                affected_user=user,
+                severity='HIGH',
+                description=f'User {user.username} changed their password',
+                details={'username': user.username}
             )
             
             # Update session to prevent logout
@@ -468,6 +576,22 @@ def reset_user_password(request, user_id):
             ip_address=ip_address
         )
         
+        # Log admin password reset action
+        log_audit_event(
+            request,
+            'ADMIN_ACTION',
+            user=request.user,
+            affected_user=target_user,
+            severity='CRITICAL',
+            description=f'Admin {request.user.username} reset password for user {target_user.username}',
+            details={
+                'admin_username': request.user.username,
+                'target_username': target_user.username,
+                'action': 'password_reset',
+                'temp_password_generated': True
+            }
+        )
+        
         messages.success(
             request,
             f'Password reset for {target_user.username}. '
@@ -538,9 +662,28 @@ def password_reset_request(request):
                     fail_silently=True,
                 )
                 
+                # Log password reset request
+                log_audit_event(
+                    request,
+                    'PASSWORD_RESET_REQUEST',
+                    user=user,
+                    affected_user=user,
+                    severity='MEDIUM',
+                    description=f'User {user.username} (email: {user.email}) requested a password reset',
+                    details={'email': user.email, 'username': user.username}
+                )
+                
             except User.DoesNotExist:
-                # User enumeration prevention: same message
-                pass
+                # User enumeration prevention: same message, but log attempt for security
+                log_audit_event(
+                    request,
+                    'PASSWORD_RESET_REQUEST',
+                    user=None,
+                    affected_user=None,
+                    severity='LOW',
+                    description=f'Password reset requested for non-existent email: {email}',
+                    details={'email': email, 'user_found': False}
+                )
             
             # Always show success message (don't leak if email exists)
             messages.success(
@@ -598,6 +741,17 @@ def password_reset_confirm(request, uidb64, token):
                     ip_address=ip_address
                 )
                 
+                # Log password reset confirmation
+                log_audit_event(
+                    request,
+                    'PASSWORD_RESET_CONFIRM',
+                    user=user,
+                    affected_user=user,
+                    severity='HIGH',
+                    description=f'User {user.username} successfully reset their password via email link',
+                    details={'username': user.username}
+                )
+                
                 messages.success(
                     request,
                     'Your password has been reset successfully. '
@@ -614,6 +768,27 @@ def password_reset_confirm(request, uidb64, token):
         )
     else:
         # Invalid token (expired, modified, or wrong user)
+        # Log invalid reset attempt for security monitoring
+        try:
+            # Try to extract user info if possible
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            attempted_user = User.objects.get(pk=uid)
+            username = attempted_user.username
+            user_obj = attempted_user
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            username = 'unknown'
+            user_obj = None
+        
+        log_audit_event(
+            request,
+            'PASSWORD_RESET_REQUEST',
+            user=user_obj,
+            affected_user=user_obj,
+            severity='MEDIUM',
+            description=f'Invalid or expired password reset token attempted for user {username}',
+            details={'username': username, 'reason': 'invalid_or_expired_token'}
+        )
+        
         messages.error(
             request,
             'The password reset link is invalid or has expired. '

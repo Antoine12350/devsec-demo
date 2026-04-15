@@ -125,6 +125,15 @@ STATIC_URL = 'static/'
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Email configuration (Gmail SMTP)
+EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_HOST = 'smtp.gmail.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'yoursvideos596@gmail.com'
+EMAIL_HOST_PASSWORD = 'YOUR_GMAIL_APP_PASSWORD'  # Replace with your App Password from Google
+DEFAULT_FROM_EMAIL = 'yoursvideos596@gmail.com'
+
 # Login redirect
 LOGIN_URL = 'antoine:login'
 LOGIN_REDIRECT_URL = 'antoine:dashboard'
