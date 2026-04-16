@@ -15,7 +15,7 @@ from .forms import (
 )
 from .permissions import (
     admin_required, instructor_required, has_permission,
-    get_user_role, is_admin, is_instructor
+    get_user_role, is_admin, is_instructor, admin_can_access_object
 )
 
 
@@ -186,6 +186,9 @@ def profile_view(request):
     """
     User profile view and update.
     Allows users to update their profile information.
+    
+    IDOR Protection: Accesses request.user.antoine_profile (no user_id parameter),
+    so users can only view/edit their own profile.
     """
     try:
         profile = request.user.antoine_profile
@@ -219,6 +222,9 @@ def change_password(request):
     """
     Change password view.
     Allows authenticated users to change their password.
+    
+    IDOR Protection: Uses request.user (no user_id parameter),
+    so each user can only change their own password.
     """
     if request.method == 'POST':
         form = CustomPasswordChangeForm(request.user, request.POST)
@@ -253,6 +259,9 @@ def login_history(request):
     """
     View user's login history.
     Shows all login attempts (successful and failed).
+    
+    IDOR Protection: Filters LoginHistory by request.user (no user_id parameter),
+    so each user only sees their own login history.
     """
     logins = LoginHistory.objects.filter(user=request.user).order_by('-login_time')[:50]
     
@@ -267,7 +276,11 @@ def login_history(request):
 def public_profile(request, user_id):
     """
     View other users' public profiles.
-    Only shows basic public information.
+    Only shows basic public information, not sensitive data.
+    
+    IDOR Protection: Users can view any public profile (not account-specific),
+    but only public data is shown. Sensitive data (email, IP, etc) is excluded.
+    get_object_or_404 returns 404 for non-existent users (not 403).
     """
     user = get_object_or_404(User, pk=user_id)
     
@@ -324,10 +337,14 @@ def audit_logs(request):
 
 @login_required(login_url='antoine:login')
 @admin_required
+@admin_can_access_object('user_id')
 def reset_user_password(request, user_id):
     """
     Admin-only view to reset another user's password.
     Generates a temporary password and logs the action.
+    
+    IDOR Protection: @admin_can_access_object ensures the user_id exists
+    and prevents enumeration attacks via different error messages.
     """
     target_user = get_object_or_404(User, pk=user_id)
     
