@@ -9,7 +9,7 @@ from django.views.decorators.csrf import csrf_protect
 from django.db import IntegrityError
 from django.http import HttpResponseForbidden
 from django.utils.encoding import force_bytes, force_str
-from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode, url_has_allowed_host_and_scheme
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.conf import settings
@@ -38,6 +38,42 @@ def get_client_ip(request):
 def get_user_agent(request):
     """Extract user agent from request"""
     return request.META.get('HTTP_USER_AGENT', '')
+
+
+def get_safe_redirect_url(next_url, request, fallback_url_name='antoine:dashboard'):
+    """
+    Safely handle redirect URLs to prevent open redirect attacks.
+    
+    Security:
+    - Only allows relative internal URLs (starting with /)
+    - Validates URL is on allowed hosts (blocks //attacker.com)
+    - Rejects absolute external URLs
+    - Returns fallback if redirect is unsafe
+    
+    Args:
+        next_url: URL to redirect to (from request parameter)
+        request: Django request object (for host validation)
+        fallback_url_name: Django URL name to use as fallback
+    
+    Returns:
+        Safe redirect destination (URL name or relative path)
+    """
+    # Check if next_url looks like a URL name (no slashes)
+    # URL names like 'antoine:dashboard' should fallback to default
+    if not next_url or not isinstance(next_url, str):
+        return fallback_url_name
+    
+    # Only allow relative URLs (starting with /)
+    if not next_url.startswith('/'):
+        return fallback_url_name
+    
+    # Validate the URL is safe (not protocol-relative, not external, etc.)
+    # url_has_allowed_host_and_scheme checks if URL doesn't try to redirect externally
+    if url_has_allowed_host_and_scheme(url=next_url, allowed_hosts=None):
+        return next_url
+    
+    # If URL doesn't pass validation, use safe default
+    return fallback_url_name
 
 
 @require_http_methods(["GET", "POST"])
@@ -165,11 +201,10 @@ def login_view(request):
                 
                 messages.success(request, f'Welcome back, {user.first_name or user.username}!')
                 
-                # Redirect to next URL or dashboard
-                next_url = request.GET.get('next', 'antoine:dashboard')
-                if next_url.startswith('/'):
-                    return redirect(next_url)
-                return redirect('antoine:dashboard')
+                # Redirect to next URL or dashboard (with open redirect protection)
+                next_url = request.GET.get('next')
+                safe_redirect = get_safe_redirect_url(next_url, request, 'antoine:dashboard')
+                return redirect(safe_redirect)
             else:
                 # Failed login - track the attempt
                 if user_obj:
