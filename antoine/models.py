@@ -136,3 +136,105 @@ class LoginAttempt(models.Model):
             return 0
         remaining = (self.locked_until - timezone.now()).total_seconds()
         return max(0, int(remaining))
+
+
+class AuditLog(models.Model):
+    """
+    Comprehensive audit logging for all authentication and privilege changes.
+    
+    Tracks security-relevant events without logging sensitive data:
+    - User authentication (login success/failure)
+    - User registration
+    - User logout
+    - Password changes and resets
+    - Permission/role changes
+    - Admin actions
+    
+    This model supports review, debugging, and compliance requirements.
+    """
+    
+    # Event type choices
+    EVENT_TYPES = [
+        ('REGISTRATION', 'User Registration'),
+        ('LOGIN_SUCCESS', 'Login Success'),
+        ('LOGIN_FAILURE', 'Login Failure'),
+        ('LOGOUT', 'Logout'),
+        ('PASSWORD_CHANGE', 'Password Change'),
+        ('PASSWORD_RESET_REQUEST', 'Password Reset Request'),
+        ('PASSWORD_RESET_CONFIRM', 'Password Reset Confirmed'),
+        ('PERMISSION_CHANGE', 'Permission/Role Change'),
+        ('PROFILE_UPDATE', 'Profile Update'),
+        ('ADMIN_ACTION', 'Admin Action'),
+        ('ACCOUNT_LOCK', 'Account Lock'),
+        ('ACCOUNT_UNLOCK', 'Account Unlock'),
+    ]
+    
+    # Severity levels
+    SEVERITY_CHOICES = [
+        ('LOW', 'Low'),
+        ('MEDIUM', 'Medium'),
+        ('HIGH', 'High'),
+        ('CRITICAL', 'Critical'),
+    ]
+    
+    user = models.ForeignKey(
+        User, 
+        on_delete=models.SET_NULL, 
+        null=True, 
+        blank=True,
+        related_name='audit_logs',
+        help_text='User who triggered the event'
+    )
+    affected_user = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs_affected',
+        help_text='User affected by the event (may differ from user for admin actions)'
+    )
+    event_type = models.CharField(
+        max_length=50,
+        choices=EVENT_TYPES,
+        help_text='Type of security event'
+    )
+    severity = models.CharField(
+        max_length=10,
+        choices=SEVERITY_CHOICES,
+        default='MEDIUM',
+        help_text='Severity level of the event'
+    )
+    ip_address = models.GenericIPAddressField(
+        help_text='IP address where event originated'
+    )
+    user_agent = models.TextField(
+        blank=True,
+        help_text='User agent string of the client'
+    )
+    description = models.TextField(
+        help_text='Detailed description of the event'
+    )
+    details = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text='Structured data about the event (never contains passwords or secrets)'
+    )
+    timestamp = models.DateTimeField(
+        auto_now_add=True,
+        help_text='When the event occurred'
+    )
+    
+    class Meta:
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['user', '-timestamp']),
+            models.Index(fields=['affected_user', '-timestamp']),
+            models.Index(fields=['event_type', '-timestamp']),
+            models.Index(fields=['severity', '-timestamp']),
+        ]
+        verbose_name_plural = 'Audit Logs'
+    
+    def __str__(self):
+        event_name = self.get_event_type_display()
+        user_info = self.user.username if self.user else 'Anonymous'
+        return f"{event_name} by {user_info} at {self.timestamp}"
