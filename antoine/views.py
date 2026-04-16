@@ -2,16 +2,22 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.models import User
+from django.contrib.auth.tokens import default_token_generator
 from django.contrib import messages
 from django.views.decorators.http import require_http_methods
 from django.views.decorators.csrf import csrf_protect
 from django.db import IntegrityError
 from django.http import HttpResponseForbidden
+from django.utils.encoding import force_bytes, force_str
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.core.mail import send_mail
+from django.template.loader import render_to_string
+from django.conf import settings
 
 from .models import UserProfile, LoginHistory, PasswordChangeHistory
 from .forms import (
     RegistrationForm, LoginForm, UserProfileForm,
-    CustomPasswordChangeForm
+    CustomPasswordChangeForm, PasswordResetRequestForm, PasswordResetForm
 )
 from .permissions import (
     admin_required, instructor_required, has_permission,
@@ -378,5 +384,156 @@ def reset_user_password(request, user_id):
     }
     
     return render(request, 'antoine/reset_user_password.html', context)
+
+
+# Password Reset Flow (Self-Service)
+
+@require_http_methods(["GET", "POST"])
+@csrf_protect
+def password_reset_request(request):
+    """
+    Password reset request view.
+    User enters their email and receives a reset link if account exists.
+    
+    Security:
+    - Uses same message for all cases (user exists or not) to prevent enumeration
+    - Sends email with secure Django token (default_token_generator)
+    - Token expires after PASSWORD_RESET_TIMEOUT (default: 1 week)
+    """
+    if request.user.is_authenticated:
+        return redirect('antoine:dashboard')
+    
+    if request.method == 'POST':
+        form = PasswordResetRequestForm(request.POST)
+        if form.is_valid():
+            email = form.cleaned_data.get('email')
+            
+            # Try to find user by email
+            try:
+                user = User.objects.get(email=email)
+                
+                # Generate secure token
+                token = default_token_generator.make_token(user)
+                uid = urlsafe_base64_encode(force_bytes(user.pk))
+                
+                # Build reset link
+                reset_link = request.build_absolute_uri(
+                    f'/password-reset-confirm/{uid}/{token}/'
+                )
+                
+                # Send email
+                subject = 'Password Reset Request'
+                html_message = render_to_string(
+                    'antoine/password_reset_email.html',
+                    {
+                        'user': user,
+                        'reset_link': reset_link,
+                        'token_expiry_days': 7,  # Django default
+                    }
+                )
+                
+                send_mail(
+                    subject,
+                    f'Visit this link to reset your password: {reset_link}',
+                    settings.DEFAULT_FROM_EMAIL,
+                    [user.email],
+                    html_message=html_message,
+                    fail_silently=True,
+                )
+                
+            except User.DoesNotExist:
+                # User enumeration prevention: same message
+                pass
+            
+            # Always show success message (don't leak if email exists)
+            messages.success(
+                request,
+                'If an account with that email exists, '
+                'a password reset link has been sent. '
+                'Check your email (including spam folder).'
+            )
+            return redirect('antoine:password_reset_done')
+    else:
+        form = PasswordResetRequestForm()
+    
+    return render(request, 'antoine/password_reset_request.html', {'form': form})
+
+
+def password_reset_done(request):
+    """
+    Password reset request done view.
+    Shows confirmation message that email was sent.
+    """
+    return render(request, 'antoine/password_reset_done.html')
+
+
+@require_http_methods(["GET", "POST"])
+@csrf_protect
+def password_reset_confirm(request, uidb64, token):
+    """
+    Password reset confirm view.
+    User enters new password after validating reset token.
+    
+    Security:
+    - Validates token using Django's default_token_generator
+    - Token includes user ID and is time-bound
+    - Expired tokens show generic "invalid link" message
+    - Prevents token reuse after password change
+    """
+    try:
+        uid = force_str(urlsafe_base64_decode(uidb64))
+        user = User.objects.get(pk=uid)
+    except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+        user = None
+    
+    # Validate token
+    if user is not None and default_token_generator.check_token(user, token):
+        if request.method == 'POST':
+            form = PasswordResetForm(request.POST)
+            if form.is_valid():
+                # Save new password
+                form.save(user)
+                
+                # Log password change
+                ip_address = get_client_ip(request)
+                PasswordChangeHistory.objects.create(
+                    user=user,
+                    ip_address=ip_address
+                )
+                
+                messages.success(
+                    request,
+                    'Your password has been reset successfully. '
+                    'You can now login with your new password.'
+                )
+                return redirect('antoine:password_reset_complete')
+        else:
+            form = PasswordResetForm()
+        
+        return render(
+            request,
+            'antoine/password_reset_confirm.html',
+            {'form': form, 'validlink': True}
+        )
+    else:
+        # Invalid token (expired, modified, or wrong user)
+        messages.error(
+            request,
+            'The password reset link is invalid or has expired. '
+            'Please request a new one.'
+        )
+        return render(
+            request,
+            'antoine/password_reset_confirm.html',
+            {'validlink': False}
+        )
+
+
+def password_reset_complete(request):
+    """
+    Password reset complete view.
+    Shows success message and link to login.
+    """
+    return render(request, 'antoine/password_reset_complete.html')
 
 

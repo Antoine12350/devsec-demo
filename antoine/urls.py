@@ -14,6 +14,12 @@ urlpatterns = [
     path('profile/', views.profile_view, name='profile'),
     path('change-password/', views.change_password, name='change_password'),
     
+    # Password Reset (Self-Service)
+    path('password-reset/', views.password_reset_request, name='password_reset_request'),
+    path('password-reset-done/', views.password_reset_done, name='password_reset_done'),
+    path('password-reset-confirm/<str:uidb64>/<str:token>/', views.password_reset_confirm, name='password_reset_confirm'),
+    path('password-reset-complete/', views.password_reset_complete, name='password_reset_complete'),
+    
     # History
     path('login-history/', views.login_history, name='login_history'),
     
