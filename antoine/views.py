@@ -13,6 +13,10 @@ from .forms import (
     RegistrationForm, LoginForm, UserProfileForm,
     CustomPasswordChangeForm
 )
+from .permissions import (
+    admin_required, instructor_required, has_permission,
+    get_user_role, is_admin, is_instructor
+)
 
 
 def get_client_ip(request):
@@ -278,4 +282,84 @@ def public_profile(request, user_id):
     }
     
     return render(request, 'antoine/public_profile.html', context)
+
+
+@login_required(login_url='antoine:login')
+@instructor_required
+def manage_users(request):
+    """
+    Admin/Instructor view to manage all users.
+    Requires instructor or admin role.
+    Shows all users with options to view/reset passwords.
+    """
+    users = User.objects.all().prefetch_related('groups').order_by('-date_joined')
+    
+    context = {
+        'users': users,
+        'is_admin': is_admin(request.user),
+        'is_instructor': is_instructor(request.user),
+    }
+    
+    return render(request, 'antoine/manage_users.html', context)
+
+
+@login_required(login_url='antoine:login')
+@instructor_required
+def audit_logs(request):
+    """
+    Admin/Instructor view to see all login audit logs.
+    Requires instructor or admin role.
+    """
+    logins = LoginHistory.objects.all().select_related('user').order_by('-login_time')[:100]
+    password_changes = PasswordChangeHistory.objects.all().select_related('user').order_by('-changed_at')[:50]
+    
+    context = {
+        'logins': logins,
+        'password_changes': password_changes,
+        'is_admin': is_admin(request.user),
+    }
+    
+    return render(request, 'antoine/audit_logs.html', context)
+
+
+@login_required(login_url='antoine:login')
+@admin_required
+def reset_user_password(request, user_id):
+    """
+    Admin-only view to reset another user's password.
+    Generates a temporary password and logs the action.
+    """
+    target_user = get_object_or_404(User, pk=user_id)
+    
+    if request.method == 'POST':
+        # Generate temporary password
+        import secrets
+        import string
+        chars = string.ascii_letters + string.digits + string.punctuation
+        temp_password = ''.join(secrets.choice(chars) for _ in range(12))
+        
+        target_user.set_password(temp_password)
+        target_user.save()
+        
+        # Log password reset by admin
+        ip_address = get_client_ip(request)
+        PasswordChangeHistory.objects.create(
+            user=target_user,
+            ip_address=ip_address
+        )
+        
+        messages.success(
+            request,
+            f'Password reset for {target_user.username}. '
+            f'Temporary password: {temp_password} '
+            f'(User should change this on next login)'
+        )
+        return redirect('antoine:manage_users')
+    
+    context = {
+        'target_user': target_user,
+    }
+    
+    return render(request, 'antoine/reset_user_password.html', context)
+
 
