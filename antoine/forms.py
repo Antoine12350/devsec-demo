@@ -4,6 +4,7 @@ from django.contrib.auth.forms import UserCreationForm, UserChangeForm, Password
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from .models import UserProfile
+from .validators import validate_avatar_file
 
 
 class RegistrationForm(UserCreationForm):
@@ -182,6 +183,13 @@ class UserProfileForm(forms.ModelForm):
             self.fields['first_name'].initial = self.instance.user.first_name
             self.fields['last_name'].initial = self.instance.user.last_name
             self.fields['email'].initial = self.instance.user.email
+    
+    def clean_avatar(self):
+        """Validate avatar file upload"""
+        avatar = self.cleaned_data.get('avatar')
+        if avatar:
+            validate_avatar_file(avatar)
+        return avatar
     
     def save(self, commit=True):
         """Save profile and update user data"""
